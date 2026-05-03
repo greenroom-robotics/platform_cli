@@ -1,6 +1,7 @@
 import click
 import shutil
 import platform
+import tempfile
 
 from glob import glob
 import os
@@ -137,29 +138,26 @@ def get_package_info(
 def get_releaserc(
     changelog: bool,
     github_release: bool = True,
-    public: bool = False,
-    arch: List[Architecture] = [],
     package: Optional[str] = None,
     package_dir: Optional[str] = None,
     ros_distro: Optional[str] = None,
-    skip_build: bool = False,
+    recipes_repo: str = "greenroom-robotics/ros-kilted-recipes",
     branches: Optional[List[str]] = None,
-    secrets: str = "{}",
 ):
     """
-    Returns the releaserc with the plugins configured according to the arguments
+    Returns the releaserc with the plugins configured for the conda flow.
+
+    `publishCmd` opens a PR on the recipes repo upserting the package's pin.
+    Build + channel publish happen on the recipes repo's CI; nothing is
+    built or attached to the source repo's GH release.
     """
-    prepare_cmd_args = "--version=${nextRelease.version}"
+    publish_args = f"--recipes-repo={recipes_repo}"
     if package_dir:
-        prepare_cmd_args += f" --package-dir={package_dir}"
-    for a in arch:
-        prepare_cmd_args += f" --arch={a.value}"
+        publish_args += f" --package-dir={package_dir}"
     if package:
-        prepare_cmd_args += f" --package={package}"
+        publish_args += f" --package={package}"
     if ros_distro:
-        prepare_cmd_args += f" --ros-distro={ros_distro}"
-    if secrets != "{}":
-        prepare_cmd_args += f" --secrets='{secrets}'"
+        publish_args += f" --ros-distro={ros_distro}"
 
     releaserc = {
         "branches": branches or ["main", "master", {"name": "alpha", "prerelease": True}],
@@ -172,21 +170,25 @@ def get_releaserc(
     add_plugin("@semantic-release/commit-analyzer", {"preset": "conventionalcommits"})
     add_plugin("@semantic-release/release-notes-generator", {"preset": "conventionalcommits"})
     add_plugin("@semantic-release/changelog", {})
-    if not skip_build:
-        add_plugin(
-            "@semantic-release/exec",
-            {
-                "prepareCmd": f"platform release deb-prepare {prepare_cmd_args}",
-                "publishCmd": f"platform release deb-publish --public {public}",
-            },
-        )
+    add_plugin(
+        "@semantic-release/exec",
+        {
+            "publishCmd": (
+                "platform release conda-publish "
+                f"--version=${{nextRelease.version}} {publish_args}"
+            ),
+        },
+    )
     if github_release:
         add_plugin(
             "@semantic-release/github",
-            {"assets": [{"path": "**/*.deb"}, {"path": "**/*.ddeb"}], "successComment": False},
+            {"assets": [], "successComment": False},
         )
     if changelog:
-        add_plugin("@semantic-release/git", {"assets": ["CHANGELOG.md"]})
+        add_plugin(
+            "@semantic-release/git",
+            {"assets": ["CHANGELOG.md", "**/package.xml"]},
+        )
 
     return releaserc
 
@@ -597,23 +599,9 @@ class Release(PlatformCliGroup):
             if package:
                 packages = {package: packages[package]}
 
-            self._write_docker_ignore()
             self._write_root_yarn_lock(asset_dir / "yarn.lock")
             self._write_package_jsons_for_each_package(packages.values())
             self._write_root_package_json(asset_dir / "package.json", packages.values())
-
-            release_mode = self._get_release_mode()
-            module_info = get_module_info()
-
-            if not module_info:
-                raise Exception("Could not find module info")
-
-            # If a Dockerfile does not exist in the module root, create it
-            docker_file_exists = (module_info.platform_module_path / "Dockerfile").exists()
-            echo(f"Dockerfile exists: {docker_file_exists}", "blue")
-            if not docker_file_exists:
-                echo("Creating Dockerfile...", "blue")
-                self._write_docker_file(asset_dir, module_info.platform_module_path, release_mode)
 
             call("yarn install --frozen-lockfile")
 
@@ -631,12 +619,6 @@ class Release(PlatformCliGroup):
             default=True,
         )
         @click.option(
-            "--public",
-            type=bool,
-            help="Should this package be published to the public PPA",
-            default=False,
-        )
-        @click.option(
             "--package",
             type=str,
             help="The package to release. If not set, all packages in the 'package_dir' will be released.",
@@ -649,17 +631,16 @@ class Release(PlatformCliGroup):
             default="./",
         )
         @click.option(
-            "--arch",
-            type=click.Choice(Architecture),  # type: ignore
-            help="The architecture to build for. OS will be linux. eg) amd64, arm64",
-            default=[Architecture.amd64, Architecture.arm64],
-            multiple=True,
-        )
-        @click.option(
             "--ros-distro",
             type=str,
             help="The ROS2 distro to build for. eg) kilted",
             default="kilted",
+        )
+        @click.option(
+            "--recipes-repo",
+            type=str,
+            help="The conda recipes repo to PR against",
+            default="greenroom-robotics/ros-kilted-recipes",
         )
         @click.option(
             "--skip-tag",
@@ -668,27 +649,15 @@ class Release(PlatformCliGroup):
             default=False,
         )
         @click.option(
-            "--skip-build",
-            type=bool,
-            help="Should platform NOT build the packages",
-            default=False,
-        )
-        @click.option(
             "--branches",
             type=str,
             help="The branches to release on. Defaults to: main,master,alpha",
-        )
-        @click.option(
-            "--secrets",
-            type=str,
-            help='JSON string of secrets to pass to docker build (e.g. \'{"API_TOKEN_GITHUB": "./.secrets/github_token"}\')',
-            default="{}",
         )
         @click.argument(
             "args",
             nargs=-1,
         )
-        def create(changelog: bool, github_release: bool, public: bool, package: str, package_dir: str, arch: List[Architecture], ros_distro: str, skip_tag: bool, skip_build: bool, branches: str, secrets: str, args: List[str]):  # type: ignore
+        def create(changelog: bool, github_release: bool, package: str, package_dir: str, ros_distro: str, recipes_repo: str, skip_tag: bool, branches: str, args: List[str]):  # type: ignore
             """Creates a release of the platform module package. See .releaserc for more info"""
             args_str = " ".join(args)
             branches_split = branches.split(",") if branches else None
@@ -703,20 +672,16 @@ class Release(PlatformCliGroup):
 
             # Create a releaserc for each package
             for package_name, package_info in packages.items():
-                # If package is specified, only build that package, otherwise build all packages (None)
-                # This prevents us from building the docker image multiple times
+                # If package is specified, only build that package, otherwise build all packages
                 package_to_build = package_name if package else None
                 releaserc = get_releaserc(
-                    changelog,
-                    github_release and not skip_tag,
-                    public,
-                    arch,
-                    package_to_build,
-                    package_dir,
-                    ros_distro,
-                    skip_build,
-                    branches_split,
-                    secrets,
+                    changelog=changelog,
+                    github_release=github_release and not skip_tag,
+                    package=package_to_build,
+                    package_dir=package_dir,
+                    ros_distro=ros_distro,
+                    recipes_repo=recipes_repo,
+                    branches=branches_split,
                 )
                 with open(package_info.package_path / ".releaserc", "w+") as f:
                     f.write(json.dumps(releaserc, indent=4))
@@ -725,133 +690,102 @@ class Release(PlatformCliGroup):
             release_mode = self._get_release_mode()
 
             if release_mode == ReleaseMode.SINGLE:
-                if len(arch) == 1:
-                    args_str += " --tag-format='${version}'"
+                args_str += " --tag-format='${version}'"
                 echo(
                     "Release mode: SINGLE, running semantic-release for root package",
                     "blue",
                 )
                 call(f"yarn semantic-release {args_str}")
             else:
-                if len(arch) == 1:
-                    args_str += " --tag-format='${name}@${version}'"
-
+                args_str += " --tag-format='${name}@${version}'"
                 echo(
                     "Release mode: MULTI, running multi-semantic-release for root package",
                     "blue",
                 )
                 call(f"yarn multi-semantic-release {args_str}")
 
-        @release.command(name="deb-prepare")
+        @release.command(name="conda-publish")
         @click.option(
             "--version",
             type=str,
-            help="The version number to assign to the debian",
-            required=False,
-            default="",
+            required=True,
+            help="Release version (without leading 'v').",
         )
         @click.option(
-            "--arch",
-            type=click.Choice(Architecture),  # type: ignore
-            help="The architecture to build for. OS will be linux. eg) amd64, arm64",
-            default=[Architecture.amd64, Architecture.arm64],
-            multiple=True,
-        )
-        @click.option(
-            "--package",
+            "--recipes-repo",
             type=str,
-            help="Which package should we build. If not specified, all packages will be built",
-            default="",
+            default="greenroom-robotics/ros-kilted-recipes",
+            show_default=True,
         )
         @click.option(
             "--package-dir",
             type=str,
-            help="The directory to release packages from. If not set, the root of the repo will be used",
             default="./",
+            show_default=True,
+        )
+        @click.option(
+            "--package",
+            type=str,
+            default="",
+            help="Single package; default = all under package-dir.",
         )
         @click.option(
             "--ros-distro",
             type=str,
-            help="The ROS2 distro to build for. eg) kilted",
             default="kilted",
+            show_default=True,
         )
-        @click.option(
-            "--secrets",
-            type=str,
-            help='JSON string of secrets to pass to docker build (e.g. \'{"API_TOKEN_GITHUB": "./.secrets/github_token"}\')',
-            default="{}",
-        )
-        def deb_prepare(version: str, arch: List[Architecture], package: str, package_dir: str, ros_distro: str, secrets: str):  # type: ignore
-            """Prepares the release by building the debian package inside a docker container"""
-            docker_platforms = [f"linux/{a.value}" for a in arch]
-            echo(
-                f"Preparing to build .deb for {[a.value for a in arch]}", "blue", group_start=True
+        def conda_publish(  # type: ignore
+            version: str,
+            recipes_repo: str,
+            package_dir: str,
+            package: str,
+            ros_distro: str,
+        ):
+            """Open/update a PR on the recipes repo upserting this release's pin(s)."""
+            from platform_cli.groups.conda_channel import (
+                clone_recipes_repo,
+                get_source_repo_short_name,
+                get_source_repo_url,
+                open_or_update_pr,
+                upsert_recipe_entry,
             )
 
-            if "API_TOKEN_GITHUB" not in os.environ:
-                raise Exception("API_TOKEN_GITHUB must be set")
+            src_url = get_source_repo_url()
+            src_short = get_source_repo_short_name()
+            tag = f"v{version}"
 
-            # Resolve path of package
             if package:
-                packages = find_packages()
-                package_info = packages[package]
+                targets = [package]
             else:
-                package_info = get_package_info()
+                targets = sorted(find_packages(Path.cwd() / package_dir).keys())
 
-            if not package_info.module_info:
-                raise Exception("Module info is required to build debs")
+            if not targets:
+                raise click.ClickException(f"No packages found under {package_dir}")
 
-            # Determine if we need to use QEMU for cross-platform emulation
-            needs_qemu = should_build_with_qemu(arch)
+            with tempfile.TemporaryDirectory() as tmp:
+                recipes_root = Path(tmp) / "recipes"
+                clone_recipes_repo(recipes_repo, recipes_root)
 
-            docker_image_name = self._get_docker_image_name(
-                package_info.module_info.platform_module_name, use_registry=needs_qemu
-            )
+                branch = f"release/{src_short}-v{version}"
+                call(f"git checkout -b {branch}", cwd=recipes_root)
 
-            # Setup cross-platform emulation if needed
-            if needs_qemu:
-                self._setup_qemu()
-                self._setup_local_registry()
-                self._setup_buildx_environment()
+                recipes_yaml = recipes_root / "rosdistro_additional_recipes.yaml"
+                for pkg in targets:
+                    conda_name = f"ros-{ros_distro}-{pkg}"
+                    upsert_recipe_entry(recipes_yaml, conda_name, src_url, tag, version)
 
-            echo(group_end=True)
+                call("git add rosdistro_additional_recipes.yaml", cwd=recipes_root)
+                call(
+                    "git -c user.name=greenroom-bot "
+                    "-c user.email=greenroom-bot@users.noreply.github.com "
+                    f'commit -m "release: {src_short} {tag}"',
+                    cwd=recipes_root,
+                )
 
-            buildx_secrets = self._parse_secrets_for_buildx(secrets)
-
-            # Build docker image with appropriate strategy
-            image_manifests = self._build_docker_image_with_buildx(
-                package_info,
-                docker_image_name,
-                buildx_secrets,
-                package_dir,
-                ros_distro,
-                package,
-                docker_platforms=docker_platforms if needs_qemu else None,
-                use_registry=needs_qemu,
-            )
-
-            # Build .deb files for all architectures
-            self._build_all_architecture_debs(
-                arch, version, package_info, docker_image_name, image_manifests
-            )
-
-        @release.command(name="deb-publish")
-        @click.option(
-            "--public",
-            type=bool,
-            help="Should this package be published to the public PPA",
-            default=False,
-        )
-        def deb_publish(public: bool):  # type: ignore
-            """Publishes the deb to the apt repo"""
-            try:
-                echo("Publishing .deb to apt repo...")
-                apt_clone(public)
-
-                debs_folder = Path.cwd() / DEBS_DIRECTORY
-
-                apt_add(debs_folder)
-                apt_push()
-            except Exception as e:
-                echo("Failed to publish .deb", "red", level=LogLevels.ERROR)
-                raise e
+                open_or_update_pr(
+                    repo=recipes_repo,
+                    branch=branch,
+                    title=f"release: {src_short} {tag}",
+                    cwd=recipes_root,
+                )
