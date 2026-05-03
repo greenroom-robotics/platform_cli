@@ -1,36 +1,23 @@
 import click
-import shutil
-import platform
 import tempfile
 
 from glob import glob
 import os
-from typing import List, Optional, Dict, Iterable, Any, Union
+from typing import List, Optional, Dict, Iterable, Any
 from enum import Enum
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import json
+import shutil
 from dataclasses import dataclass
-from python_on_whales import docker
-from python_on_whales.components.buildx.imagetools.models import Manifest
 
 from platform_cli.groups.base import PlatformCliGroup
-from platform_cli.helpers import echo, call, LogLevels
-
-from platform_cli.groups.packaging import apt_clone, apt_push, apt_add
-
-DEBS_DIRECTORY = "debs"
-DOCKER_REGISTRY = "localhost:5000"
+from platform_cli.helpers import echo, call
 
 
 class ReleaseMode(Enum):
     SINGLE = "SINGLE"
     MULTI = "MULTI"
-
-
-class Architecture(str, Enum):
-    amd64 = "amd64"
-    arm64 = "arm64"
 
 
 @dataclass
@@ -62,37 +49,6 @@ def check_parents_for_file(filename: str, path: Optional[Path] = None) -> Path:
             current_path = current_path.parent
 
     raise Exception(f"Could not find {filename} in any parent directory")
-
-
-def get_current_system_architecture() -> Architecture:
-    """
-    Returns the current system architecture mapped to our Architecture enum.
-    """
-    machine = platform.machine()
-    if machine in ("x86_64", "AMD64"):
-        return Architecture.amd64
-    elif machine in ("aarch64", "arm64"):
-        return Architecture.arm64
-    else:
-        # Default to amd64 for unknown architectures
-        return Architecture.amd64
-
-
-def should_build_with_qemu(target_architectures: List[Architecture]) -> bool:
-    """
-    Determines if we need to use QEMU for cross-platform emulation.
-    Returns True if we need QEMU (cross-platform or multiple architectures),
-    False if we can build natively (single native architecture).
-    Note: We still use buildx in both cases for secrets support.
-    """
-    if len(target_architectures) == 0:
-        return False
-
-    if len(target_architectures) > 1:
-        return True
-
-    current_arch = get_current_system_architecture()
-    return target_architectures[0] != current_arch
 
 
 def get_module_info(path: Optional[Path] = None) -> Optional[ModuleInfo]:
@@ -260,19 +216,6 @@ class Release(PlatformCliGroup):
             with open(dest, "w") as f:
                 json.dump(package_json, f, indent=4)
 
-    def _write_docker_file(self, asset_dir: Path, dest_dir: Path, release_mode: ReleaseMode):
-        """
-        Writes the dockerfile to the destination directory
-        Select the "single" or "multi" dockerfile based on the release mode
-        """
-        dockerfile = (
-            asset_dir / "Dockerfile.single"
-            if release_mode == ReleaseMode.SINGLE
-            else asset_dir / "Dockerfile.multi"
-        )
-        dest = dest_dir / "Dockerfile"
-        shutil.copyfile(dockerfile, dest)
-
     def _write_package_json(self, dest: Path, package_name: str):
         package_json = {
             "name": package_name,
@@ -283,39 +226,12 @@ class Release(PlatformCliGroup):
         with open(dest, "w") as f:
             json.dump(package_json, f, indent=4)
 
-    def _write_docker_ignore(self):
-        """Write a .dockerignore which ignores node_modules"""
-        dest = Path.cwd() / ".dockerignore"
-        # If the .dockerignore already exists, check to see if it already ignores node_modules
-        if dest.exists():
-            with open(dest) as f:
-                if "node_modules" in f.read():
-                    # It already ignores node_modules, so return
-                    return
-                # If it doesn't ignore node_modules, append it
-                with open(dest, "a") as f:
-                    f.write("node_modules")
-                return
-        # If there is no .dockerignore, create one
-        with open(dest, "w") as f:
-            f.write("node_modules")
-            return
-
     def _get_release_mode(self) -> ReleaseMode:
         """Returns the release mode for the current working directory"""
         package_xml_path = Path.cwd() / "package.xml"
         if package_xml_path.exists():
             return ReleaseMode.SINGLE
         return ReleaseMode.MULTI
-
-    def _get_docker_image_name(self, platform_module_name: str, use_registry: bool = False) -> str:
-        """Returns the docker image name for a package"""
-        # Note, uppercase is not allowed in docker image names
-        image_name = f"{platform_module_name.lower()}:latest"
-        if use_registry:
-            return f"{DOCKER_REGISTRY}/{image_name}"
-        else:
-            return image_name
 
     def _write_root_yarn_lock(self, src: Path):
         dest = Path.cwd() / "yarn.lock"
@@ -337,230 +253,6 @@ class Release(PlatformCliGroup):
             package_json_path = package_info.package_path / "package.json"
             if not package_json_path.exists():
                 self._write_package_json(package_json_path, package_info.package_name)
-
-    def _get_docker_image_name_with_digest(
-        self, image_name: str, image_manifests: Optional[Manifest], architecture: Architecture
-    ) -> str:
-        """Returns the digest for a docker image given an architecture"""
-        if image_manifests is None or image_manifests.manifests is None:
-            # If there are no manifests (native build), then there is only one image so we don't need the digest
-            return image_name
-
-        # Find the image for the platform and archicture
-        image_for_docker_platform = next(
-            manifest
-            for manifest in image_manifests.manifests
-            if manifest.platform and manifest.platform.architecture == architecture.value
-        )
-
-        return f"{image_name}@{image_for_docker_platform.digest}"
-
-    def _build_deb_in_docker(
-        self,
-        version: str,
-        package_info: PackageInfo,
-        docker_image_name: str,
-        architecture: Architecture,
-        image_manifests: Optional[Manifest],
-    ):
-        """
-        Runs the build command in a docker container
-        The volume is mounted so we have access to the created deb file
-        """
-        echo(
-            f"Building {package_info.package_name} .deb for {architecture.value}",
-        )
-        docker_image_name_with_digest = self._get_docker_image_name_with_digest(
-            docker_image_name, image_manifests, architecture
-        )
-
-        docker_plaform = f"linux/{architecture.value}"
-
-        if not package_info.module_info:
-            raise Exception("Module info is required to build debs")
-
-        package_relative_to_platform_module = package_info.package_path.relative_to(
-            package_info.module_info.platform_module_path
-        )
-        host_debs_path = package_info.package_path / DEBS_DIRECTORY
-        docker_working_dir = (
-            Path("/home/ros/")
-            / package_info.module_info.platform_module_name
-            / package_relative_to_platform_module
-        )
-        docker_debs_path = docker_working_dir / DEBS_DIRECTORY
-
-        # Make the .debs directory on the host, otherwise docker will make it with root permissions!
-        host_debs_path.mkdir(exist_ok=True)
-        # Make the .debs directory writable by all users
-        os.chmod(host_debs_path, 0o777)
-
-        docker.run(
-            docker_image_name_with_digest,
-            [
-                "/bin/bash",
-                "-l",
-                "-c",
-                f"platform pkg build --version {version} --output {DEBS_DIRECTORY} && platform pkg clean",
-            ],
-            workdir=docker_working_dir,
-            volumes=[
-                # We only mount the /debs directory for each package
-                (host_debs_path, docker_debs_path)
-            ],
-            platform=docker_plaform,
-            tty=True,
-        )
-
-    def _setup_qemu(self):
-        """Install qemu binfmt support for other architectures"""
-        echo("Setting up QEMU...")
-        try:
-            docker.run(
-                "multiarch/qemu-user-static",
-                ["--reset", "-p", "yes", "--credential", "yes"],
-                privileged=True,
-                remove=True,
-            )
-        except Exception as e:
-            # docker on ZFS causes this to error and there is no known fix
-            echo(f"QEMU already running: {e}", "yellow")
-            pass
-
-    def _setup_local_registry(self):
-        """Start a local docker registry on port 5000"""
-        echo("Setting up local docker registry...")
-        try:
-            docker.run(
-                "registry:2",
-                publish=[(5000, 5000)],
-                detach=True,
-                name="registry",
-                remove=True,
-            )
-        except Exception as e:
-            echo(f"Local registry already running: {e}", "yellow")
-
-    def _setup_buildx_environment(self):
-        """Configure buildx environment"""
-        # Custom builder needed for local registry access (cross-platform builds)
-        try:
-            docker.buildx.create(
-                name="platform",
-                driver="docker-container",
-                use=True,
-                driver_options={"network": "host"},
-            )
-            echo("Created custom buildx builder for registry access", "blue")
-        except Exception:
-            echo("Custom buildx builder already exists", "yellow")
-            echo(
-                "Consider running `docker buildx rm platform` if you want to reset the build environment",
-                "yellow",
-            )
-        docker.buildx.use("platform")
-
-    def _parse_secrets_for_buildx(self, secrets: str) -> List[str]:
-        """Parse secrets JSON and prepare buildx secrets format"""
-        buildx_secrets = []
-        try:
-            secrets_dict = json.loads(secrets)
-            for secret_id, secret_path in secrets_dict.items():
-                buildx_secrets.append(f"id={secret_id},src={secret_path}")
-        except json.JSONDecodeError:
-            if secrets != "{}":
-                echo(f"Warning: Invalid secrets JSON format: {secrets}", "yellow")
-
-        return buildx_secrets
-
-    def _build_docker_image_with_buildx(
-        self,
-        package_info: PackageInfo,
-        docker_image_name: str,
-        buildx_secrets: List[str],
-        package_dir: str,
-        ros_distro: str,
-        package: str,
-        docker_platforms: Optional[List[str]] = None,
-        use_registry: bool = False,
-    ) -> Optional[Manifest]:
-        """Build docker image using buildx with unified logic for both native and multiplatform builds"""
-        if not package_info.module_info:
-            raise Exception("Module info is required to build docker images")
-
-        # Dynamic echo message based on build type
-        if docker_platforms:
-            echo("Building docker container with buildx...", group_start=True)
-        else:
-            echo(
-                f"Building docker container for native architecture ({get_current_system_architecture().value}) with buildx...",
-                group_start=True,
-            )
-
-        # Prepare build argument
-        build_kwargs = {
-            "tags": [docker_image_name],
-            "secrets": buildx_secrets,
-            "build_args": {
-                "API_TOKEN_GITHUB": os.environ["API_TOKEN_GITHUB"],
-                "GPU": os.environ["GPU"],
-                "PLATFORM_MODULE": package_info.module_info.platform_module_name,
-                "PACKAGE_DIR": package_dir,
-                "ROS_DISTRO": ros_distro,
-                "PACKAGE_NAME": package,
-            },
-        }
-
-        # Add platform-specific options
-        if docker_platforms:
-            build_kwargs["platforms"] = docker_platforms
-
-        if use_registry:
-            build_kwargs["output"] = {"type": "registry"}
-        else:
-            build_kwargs["load"] = True
-
-        # Build the image - context path is first positional argument
-        docker.buildx.build(package_info.module_info.platform_module_path, **build_kwargs)
-        echo(group_end=True)
-
-        # Return manifest for registry builds, None for local builds
-        if use_registry:
-            return docker.buildx.imagetools.inspect(docker_image_name)
-        else:
-            return None
-
-    def _build_all_architecture_debs(
-        self,
-        arch: List[Architecture],
-        version: str,
-        package_info: PackageInfo,
-        docker_image_name: str,
-        image_manifests: Optional[Manifest],
-    ):
-        """Build .deb files for all target architectures"""
-        for architecture in arch:
-            echo(
-                f"Building .deb for package {package_info.package_name} for {architecture.value}",
-                "blue",
-                group_start=True,
-            )
-            try:
-                self._build_deb_in_docker(
-                    version=version if version else package_info.package_version,
-                    package_info=package_info,
-                    docker_image_name=docker_image_name,
-                    architecture=architecture,
-                    image_manifests=image_manifests,
-                )
-            except Exception as e:
-                echo(
-                    f"Failed to build .deb for {architecture}",
-                    "red",
-                    level=LogLevels.ERROR,
-                )
-                raise e
-            echo(group_end=True)
 
     def create(self, cli: click.Group):
         @cli.group(help="CLI handlers associated releasing a platform module")
