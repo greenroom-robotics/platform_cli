@@ -1,25 +1,16 @@
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Dict
 import click
 from psutil import cpu_count
 import shutil
 import os
-import math
 
 from platform_cli.groups.base import PlatformCliGroup
 from platform_cli.helpers import call, stdout_call, echo
 
-GR_APT_REPO_PRIVATE = "Greenroom-Robotics/packages"
-GR_APT_REPO_PUBLIC = "Greenroom-Robotics/public_packages"
-GR_APT_REPO_PATH = Path.home() / ".gr/gr-packages"
-
 
 def get_ros_distro():
     return os.environ["ROS_DISTRO"]
-
-
-def get_debs(p: Path, debug_files: bool = False) -> List[Path]:
-    return list(p.glob("*.deb")) + (list(p.glob("*.ddeb")) if debug_files else [])
 
 
 def find_packages_with_colcon(p: Path) -> Dict[str, Path]:
@@ -49,79 +40,6 @@ def parse_version(version: str):
         raise ValueError("Version should be of the form 1.2.3 or 1.2.3-alpha1")
 
     return version_semver, version_prerelease
-
-
-def get_apt_repo_url(public: bool = False) -> str:
-    """If we have API_TOKEN_GITHUB, use https, otherwise use ssh"""
-    packages_repo = GR_APT_REPO_PUBLIC if public else GR_APT_REPO_PRIVATE
-
-    if "API_TOKEN_GITHUB" in os.environ:
-        return f"https://x-access-token:{os.environ['API_TOKEN_GITHUB']}@github.com/{packages_repo}.git"
-
-    return f"git@github.com:{packages_repo}.git"
-
-
-def apt_clone(public: bool = False, sparse: bool = False):
-    """Checks out the GR apt repo"""
-    if GR_APT_REPO_PATH.is_dir():
-        echo(f"Packages repo has already been cloned to {GR_APT_REPO_PATH}", "blue")
-        return
-
-    github_repo_url = get_apt_repo_url(public)
-    try:
-        clone_command = "git clone --filter=blob:none --depth=1"
-        if sparse:
-            clone_command += " --sparse"
-        call(f"{clone_command} {github_repo_url} {GR_APT_REPO_PATH}")
-    except Exception as e:
-        raise click.ClickException(f"Error cloning apt repo: {e}")
-
-
-def apt_push():
-    """Pushes to the GR apt repo"""
-    attempt = 0
-    while True:
-        call("git fetch", cwd=GR_APT_REPO_PATH)
-        call("git rebase -Xtheirs origin/main", cwd=GR_APT_REPO_PATH)
-        ret = call("git push", cwd=GR_APT_REPO_PATH, abort=False)
-
-        if ret.returncode == 0:
-            break
-
-        attempt += 1
-
-        if attempt > 4:
-            raise click.ClickException("Failed to push to apt repo")
-
-
-def apt_add(deb: Optional[Path] = None, sparse: bool = False):
-    """Adds a .deb to the GR apt repo"""
-
-    if not GR_APT_REPO_PATH.exists():
-        raise click.ClickException("GR apt repo has not been cloned.")
-
-    if deb:
-        if deb.is_dir():
-            debs = get_debs(deb, debug_files=False)
-        else:
-            debs = [deb]
-    else:
-        debs = get_debs(Path.cwd(), debug_files=False)
-
-    if not debs:
-        raise click.ClickException("No debs found.")
-    for d in debs:
-        echo(f"Copying {d} info {GR_APT_REPO_PATH / 'debian'}", "blue")
-        shutil.copy(d, GR_APT_REPO_PATH / "debian")
-        add_command = "git add"
-        if sparse:
-            add_command += " --sparse"
-        call(f"{add_command} debian/{d.name}", cwd=GR_APT_REPO_PATH)
-
-    call(
-        f"git commit -a -m 'feat: add debian package: {' '.join(d.name for d in debs)}'",
-        cwd=GR_APT_REPO_PATH,
-    )
 
 
 class Packaging(PlatformCliGroup):
@@ -266,7 +184,8 @@ class Packaging(PlatformCliGroup):
             # the .deb and .ddeb files are in the parent directory
             # move .deb/.ddeb files into the output folder
             Path(output).mkdir(parents=True, exist_ok=True)
-            debs = get_debs(Path.cwd().parent, debug_files=True)
+            parent = Path.cwd().parent
+            debs = list(parent.glob("*.deb")) + list(parent.glob("*.ddeb"))
             echo(f"Moving {len(debs)} .deb / .ddeb files to {output}", "blue")
             if debs:
                 for d in debs:
@@ -281,44 +200,3 @@ class Packaging(PlatformCliGroup):
                 raise click.ClickException("No debs found.")
 
             echo("Build complete", "green")
-
-        @pkg.command(name="apt-clone")
-        @click.option(
-            "--public",
-            type=bool,
-            help="Should this package be published to the public PPA",
-            default=False,
-        )
-        @click.option(
-            "--sparse",
-            type=bool,
-            help="Should we do a sparse checkout of the apt repo",
-            default=False,
-            flag_value=True,
-        )
-        def apt_clone(public: bool, sparse: bool):  # type: ignore reportUnusedFunction
-            apt_clone(public, sparse)
-
-        @pkg.command(name="apt-push")
-        def apt_push():  # type: ignore reportUnusedFunction
-            apt_push()
-
-        @pkg.command(name="apt-update")
-        def apt_update():  # type: ignore reportUnusedFunction
-            """Update the GR apt repo"""
-            if not GR_APT_REPO_PATH.exists():
-                raise click.ClickException("GR apt repo has not been cloned.")
-            call("git pull --rebase", cwd=GR_APT_REPO_PATH)
-
-        @pkg.command(name="apt-add")
-        @click.option(
-            "--sparse",
-            type=bool,
-            help="Should we do a sparse add to the apt repo",
-            default=False,
-            flag_value=True,
-        )
-        @click.argument("deb", type=click.Path(exists=True), required=False)
-        def apt_add(sparse: bool, deb: str):  # type: ignore reportUnusedFunction
-            """Adds a .deb to the GR apt repo"""
-            apt_add(deb, sparse)
