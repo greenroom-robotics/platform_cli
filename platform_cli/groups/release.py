@@ -462,10 +462,12 @@ class Release(PlatformCliGroup):
                 branch = f"release/{src_short}-v{version}"
                 call(f"git checkout -b {branch}", cwd=recipes_root)
 
+                # vinca prepends the `ros-<distro>-` prefix when generating
+                # recipes, so the key here is the bare package name (matches
+                # `<name>` in package.xml).
                 recipes_yaml = recipes_root / "rosdistro_additional_recipes.yaml"
                 for pkg in targets:
-                    conda_name = f"ros-{ros_distro}-{pkg}"
-                    upsert_recipe_entry(recipes_yaml, conda_name, src_url, tag, version)
+                    upsert_recipe_entry(recipes_yaml, pkg, src_url, tag, version)
 
                 call("git add rosdistro_additional_recipes.yaml", cwd=recipes_root)
                 call(
