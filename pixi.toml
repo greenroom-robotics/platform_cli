@@ -1,0 +1,42 @@
+[workspace]
+name = "platform_cli"
+channels = [
+  "http://localhost:8000",
+  "https://prefix.dev/conda-forge",
+]
+platforms = ["linux-64"]
+preview = ["pixi-build"]
+
+[dependencies]
+platform_cli = { path = "." }
+
+[package]
+name = "platform_cli"
+version = "1.8.0"
+description = "A CLI for common scripts shared between Greenroom platform modules and platform CI"
+license = "LicenseRef-Proprietary"
+authors = ["Greenroom Robotics <team@greenroomrobotics.com>"]
+
+[package.build.backend]
+name = "pixi-build-python"
+version = "*"
+channels = [
+  "https://prefix.dev/pixi-build-backends",
+  "https://prefix.dev/conda-forge",
+]
+
+[package.host-dependencies]
+python = "*"
+hatchling = "*"
+
+[package.run-dependencies]
+python = "*"
+toml = "~=0.10"
+setuptools = "*"
+colorama = "*"
+click = "*"
+psutil = ">=5,<8"
+python-on-whales = "*"
+watchdog = "*"
+gitpython = ">=3.1,<4"
+"ruamel.yaml" = "~=0.18"
