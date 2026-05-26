@@ -944,6 +944,7 @@ packages:
   - watchdog
   - gitpython >=3.1,<4
   - ruamel.yaml ~=0.18
+  license: LicenseRef-Proprietary
   host_packages:
   - conda: https://prefix.dev/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
   - conda: https://prefix.dev/conda-forge/linux-64/bzip2-1.0.8-hda65f42_9.conda
