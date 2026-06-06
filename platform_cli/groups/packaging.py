@@ -171,9 +171,16 @@ class Packaging(PlatformCliGroup):
                     shutil.rmtree(p)
 
         @pkg.command(name="refresh-deps")
-        def refresh_deps():  # type: ignore reportUnusedFunction
+        @click.option(
+            "--no-apt-update",
+            is_flag=True,
+            default=False,
+            help="Skip `sudo apt-get update` (still runs rosdep update)",
+        )
+        def refresh_deps(no_apt_update: bool):
             """Refresh rosdeps"""
-            call("sudo apt-get update")
+            if not no_apt_update:
+                call("sudo apt-get update")
             distro = get_ros_distro()
             if distro == "iron":
                 distro = "iron --include-eol-distros"
@@ -186,7 +193,13 @@ class Packaging(PlatformCliGroup):
             help="The package to install deps for (defaults to all)",
             default=None,
         )
-        def install_deps(package: str):  # type: ignore reportUnusedFunction
+        @click.option(
+            "--no-apt-update",
+            is_flag=True,
+            default=False,
+            help="Skip `sudo apt-get update` when refreshing rosdeps",
+        )
+        def install_deps(package: str, no_apt_update: bool):
             """Installs rosdeps"""
             package_dir = Path.cwd()
             packages = find_packages_with_colcon(package_dir)
@@ -195,7 +208,7 @@ class Packaging(PlatformCliGroup):
 
             # If we find a package with that name, only install the deps for that package
             from_paths = packages[package] if package else package_dir
-            refresh_deps.callback()  # type: ignore
+            refresh_deps.callback(no_apt_update=no_apt_update)  # type: ignore
             distro = get_ros_distro()
             if distro == "iron":
                 distro = "iron --include-eol-distros"

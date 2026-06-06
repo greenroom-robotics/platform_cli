@@ -8,6 +8,7 @@ from platform_cli.groups.poetry import Poetry
 from platform_cli.groups.packaging import Packaging
 from platform_cli.groups.release import Release
 from platform_cli.groups.py import Py
+from platform_cli.groups.dev import Dev
 
 
 base_groups: List[PlatformCliGroup] = [
@@ -17,6 +18,7 @@ base_groups: List[PlatformCliGroup] = [
     Release(),
     Py(),
     Workspace(),
+    Dev(),
 ]
 
 help = f"""
