@@ -42,6 +42,3 @@ path = "platform_cli/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["platform_cli"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"platform_cli/assets" = "platform_cli/assets"
