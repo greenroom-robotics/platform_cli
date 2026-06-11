@@ -12,7 +12,7 @@
 #
 # See https://github.com/pre-commit/pre-commit
 
-exclude: '(^|/)pixi\.(toml|lock)$'
+exclude: '(^|/)pixi\.lock$'
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -30,6 +30,13 @@ repos:
       - id: mixed-line-ending
       - id: trailing-whitespace
       - id: fix-byte-order-marker
+
+  # TOML hooks
+  - repo: https://github.com/ComPWA/taplo-pre-commit
+    rev: v0.9.3
+    hooks:
+      - id: taplo-format
+        files: (^|/)pixi\.toml$
 
   - repo: https://github.com/asottile/pyupgrade
     rev: v2.32.1
