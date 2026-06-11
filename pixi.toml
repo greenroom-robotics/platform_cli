@@ -19,7 +19,10 @@ authors = ["Greenroom Robotics <team@greenroomrobotics.com>"]
 
 [package.build.backend]
 name = "pixi-build-python"
-version = "*"
+# Latest backend nightly compatible with pixi 0.70.2. Newer builds (commit
+# 164b998+) change the MatchSpec wire format / bump build-backend-api to v5,
+# which this pixi version does not support.
+version = "==0.5.2.20260603.1147.c5d4437"
 channels = [
   "https://prefix.dev/pixi-build-backends",
   "https://prefix.dev/conda-forge",
