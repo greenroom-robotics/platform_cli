@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "platform_cli"
+dynamic = ["version"]
+description = "A CLI for common scripts shared between Greenroom platform modules and platform CI"
+readme = "README.md"
+license = { text = "Copyright (C) 2022, Greenroom Robotics" }
+authors = [{ name = "Greenroom Robotics", email = "team@greenroomrobotics.com" }]
+maintainers = [{ name = "David Revay", email = "david.revay@greenroomrobotics.com" }]
+requires-python = ">=3.10"
+keywords = ["colcon"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Plugins",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python",
+  "Topic :: Software Development :: Build Tools",
+]
+dependencies = [
+  "toml~=0.10",
+  "setuptools",
+  "colorama",
+  "click",
+  "psutil",
+  "python-on-whales",
+  "watchdog",
+  "GitPython",
+  "ruamel.yaml~=0.18",
+]
+
+[project.scripts]
+platform = "platform_cli.cli:init_platform_cli"
+
+[project.urls]
+Homepage = "https://github.com/Greenroom-Robotics/platform_cli"
+
+[tool.hatch.version]
+path = "platform_cli/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["platform_cli"]
