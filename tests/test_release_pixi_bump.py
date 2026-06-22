@@ -59,6 +59,7 @@ def test_release_job_commits_pixi_toml():
 def test_release_job_adds_changelog_when_requested():
     rc = get_releaserc(changelog=True, skip_build=True)
     assets = _git_assets(rc)
+    assert assets is not None
     assert "pixi.toml" in assets and "CHANGELOG.md" in assets
 
 
