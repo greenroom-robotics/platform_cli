@@ -173,6 +173,10 @@ def get_releaserc(
     add_plugin("@semantic-release/release-notes-generator", {"preset": "conventionalcommits"})
     add_plugin("@semantic-release/changelog", {})
     if not skip_build:
+        # Build legs (one per arch) build + publish the .deb. They run
+        # concurrently and must NOT commit/push anything: a push here advances
+        # the remote branch, leaving the central release job's checkout behind
+        # remote ("a new version won't be published"). So no git plugin below.
         add_plugin(
             "@semantic-release/exec",
             {
@@ -180,17 +184,34 @@ def get_releaserc(
                 "publishCmd": f"platform release deb-publish --public {public}",
             },
         )
+    else:
+        # Release job: no docker build here, so bump pixi.toml to the released
+        # version directly. @semantic-release/git (below) commits it at the
+        # tagged commit. This is the only place that writes back to the branch.
+        bump_cmd_args = "--version=${nextRelease.version}"
+        if package_dir:
+            bump_cmd_args += f" --package-dir={package_dir}"
+        if package:
+            bump_cmd_args += f" --package={package}"
+        add_plugin(
+            "@semantic-release/exec",
+            {"prepareCmd": f"platform release set-pixi-version {bump_cmd_args}"},
+        )
     if github_release:
         add_plugin(
             "@semantic-release/github",
             {"assets": [{"path": "**/*.deb"}, {"path": "**/*.ddeb"}], "successComment": False},
         )
-    # Always commit pixi.toml back so the tagged commit carries the released
-    # conda version; add CHANGELOG.md only when changelog is requested.
-    git_assets = ["pixi.toml"]
-    if changelog:
-        git_assets.append("CHANGELOG.md")
-    add_plugin("@semantic-release/git", {"assets": git_assets})
+    # Commit the release artifacts ONLY from the release job (skip_build). Build
+    # legs never push, or they desync the release job (see above). The release
+    # job commits the bumped pixi.toml, plus CHANGELOG.md when requested.
+    if skip_build:
+        git_assets = ["pixi.toml"]
+        if changelog:
+            git_assets.append("CHANGELOG.md")
+        add_plugin("@semantic-release/git", {"assets": git_assets})
+    elif changelog:
+        add_plugin("@semantic-release/git", {"assets": ["CHANGELOG.md"]})
 
     return releaserc
 
@@ -760,6 +781,44 @@ class Release(PlatformCliGroup):
                 )
                 call(f"yarn multi-semantic-release {args_str}")
 
+        @release.command(name="set-pixi-version")
+        @click.option(
+            "--version",
+            type=str,
+            help="The version to write into the package's pixi.toml [package] table",
+            required=True,
+        )
+        @click.option(
+            "--package",
+            type=str,
+            help="Which package's pixi.toml to bump. If not specified, the package in the current directory is used",
+            default="",
+        )
+        @click.option(
+            "--package-dir",
+            type=str,
+            help="The directory to release packages from. If not set, the root of the repo will be used",
+            default="./",
+        )
+        def set_pixi_version_cmd(version: str, package: str, package_dir: str):  # type: ignore
+            """Bumps a package's pixi.toml version so the release commit carries it.
+
+            Runs in the central release job (no docker build); @semantic-release/git
+            then commits the bumped pixi.toml at the tagged commit.
+            """
+            # Resolve the package the same way deb-prepare does.
+            if package:
+                package_info = find_packages()[package]
+            else:
+                package_info = get_package_info()
+
+            pixi_toml = package_info.package_path / "pixi.toml"
+            if pixi_toml.exists():
+                set_pixi_version(pixi_toml, version)
+                echo(f"Bumped {pixi_toml} to {version}", "green")
+            else:
+                echo(f"No pixi.toml at {pixi_toml}; nothing to bump", "yellow")
+
         @release.command(name="deb-prepare")
         @click.option(
             "--version",
@@ -815,16 +874,6 @@ class Release(PlatformCliGroup):
                 package_info = packages[package]
             else:
                 package_info = get_package_info()
-
-            # Bump the package's pixi.toml in the working tree so the deb
-            # release commit (committed by @semantic-release/git) carries the
-            # released version. package.xml is bumped only inside the docker
-            # build (transient); pixi.toml is the conda manifest and must be
-            # committed at the tagged commit.
-            if version:
-                pixi_toml = package_info.package_path / "pixi.toml"
-                if pixi_toml.exists():
-                    set_pixi_version(pixi_toml, version)
 
             if not package_info.module_info:
                 raise Exception("Module info is required to build debs")
