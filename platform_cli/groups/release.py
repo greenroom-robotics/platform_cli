@@ -185,8 +185,12 @@ def get_releaserc(
             "@semantic-release/github",
             {"assets": [{"path": "**/*.deb"}, {"path": "**/*.ddeb"}], "successComment": False},
         )
+    # Always commit pixi.toml back so the tagged commit carries the released
+    # conda version; add CHANGELOG.md only when changelog is requested.
+    git_assets = ["pixi.toml"]
     if changelog:
-        add_plugin("@semantic-release/git", {"assets": ["CHANGELOG.md"]})
+        git_assets.append("CHANGELOG.md")
+    add_plugin("@semantic-release/git", {"assets": git_assets})
 
     return releaserc
 
@@ -210,6 +214,20 @@ def get_package_version_from_package_xml(package_xml: Path) -> str:
     tree = ET.parse(package_xml)
     root = tree.getroot()
     return root.find("version").text  # type: ignore
+
+
+def set_pixi_version(pixi_toml: Path, version: str) -> None:
+    """Write `version` into the [package] table of a pixi.toml, preserving
+    comments and formatting. No-op-safe; raises if there is no [package] table.
+    """
+    import tomlkit
+
+    doc = tomlkit.parse(pixi_toml.read_text())
+    pkg = doc.get("package")
+    if pkg is None:
+        raise Exception(f"{pixi_toml} has no [package] table")
+    pkg["version"] = version
+    pixi_toml.write_text(tomlkit.dumps(doc))
 
 
 def find_packages(path: Optional[Path] = None, module_info: bool = True) -> Dict[str, PackageInfo]:
@@ -797,6 +815,16 @@ class Release(PlatformCliGroup):
                 package_info = packages[package]
             else:
                 package_info = get_package_info()
+
+            # Bump the package's pixi.toml in the working tree so the deb
+            # release commit (committed by @semantic-release/git) carries the
+            # released version. package.xml is bumped only inside the docker
+            # build (transient); pixi.toml is the conda manifest and must be
+            # committed at the tagged commit.
+            if version:
+                pixi_toml = package_info.package_path / "pixi.toml"
+                if pixi_toml.exists():
+                    set_pixi_version(pixi_toml, version)
 
             if not package_info.module_info:
                 raise Exception("Module info is required to build debs")
