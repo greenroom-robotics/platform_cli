@@ -145,6 +145,7 @@ def get_releaserc(
     skip_build: bool = False,
     branches: Optional[List[str]] = None,
     secrets: str = "{}",
+    commit_package: Optional[str] = None,
 ):
     """
     Returns the releaserc with the plugins configured according to the arguments
@@ -202,6 +203,21 @@ def get_releaserc(
             "@semantic-release/github",
             {"assets": [{"path": "**/*.deb"}, {"path": "**/*.ddeb"}], "successComment": False},
         )
+
+    # Name the package in the release commit subject so `git log` shows what
+    # each chore(release) bumped. In MULTI mode multi-semantic-release runs each
+    # package's own semantic-release against this per-package .releaserc, so
+    # commit_package is exactly the package being released here. Falls back to
+    # @semantic-release/git's default subject when unset.
+    def git_config(assets: List[str]) -> Dict[str, Any]:
+        cfg: Dict[str, Any] = {"assets": assets}
+        if commit_package:
+            cfg["message"] = (
+                f"chore(release): {commit_package} "
+                "${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+            )
+        return cfg
+
     # Commit the release artifacts ONLY from the release job (skip_build). Build
     # legs never push, or they desync the release job (see above). The release
     # job commits the bumped pixi.toml, plus CHANGELOG.md when requested.
@@ -209,9 +225,9 @@ def get_releaserc(
         git_assets = ["pixi.toml"]
         if changelog:
             git_assets.append("CHANGELOG.md")
-        add_plugin("@semantic-release/git", {"assets": git_assets})
+        add_plugin("@semantic-release/git", git_config(git_assets))
     elif changelog:
-        add_plugin("@semantic-release/git", {"assets": ["CHANGELOG.md"]})
+        add_plugin("@semantic-release/git", git_config(["CHANGELOG.md"]))
 
     return releaserc
 
@@ -756,6 +772,7 @@ class Release(PlatformCliGroup):
                     skip_build,
                     branches_split,
                     secrets,
+                    commit_package=package_name,
                 )
                 with open(package_info.package_path / ".releaserc", "w+") as f:
                     f.write(json.dumps(releaserc, indent=4))
