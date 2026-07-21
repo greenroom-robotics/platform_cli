@@ -23,6 +23,11 @@ def _exec_plugin(rc):
     return ex[0][1] if ex else None
 
 
+def _git_message(rc):
+    git = [p for p in rc["plugins"] if p[0] == "@semantic-release/git"]
+    return git[0][1].get("message") if git else None
+
+
 def test_set_pixi_version_bumps_package_table_preserving_comments():
     body = (
         "[workspace]\n"
@@ -80,10 +85,28 @@ def test_build_leg_commits_only_changelog_when_requested():
     assert assets == ["CHANGELOG.md"]
 
 
+def test_commit_message_names_the_package():
+    # commit_package -> release commit subject names the package (not a bare
+    # version), so `git log` shows what each chore(release) bumped.
+    rc = get_releaserc(changelog=False, skip_build=True, commit_package="object_tracker")
+    msg = _git_message(rc)
+    assert msg is not None, "commit_package must set an explicit git message"
+    assert msg.startswith("chore(release): object_tracker ${nextRelease.version} [skip ci]")
+    assert "${nextRelease.notes}" in msg, "release notes must still ride in the body"
+
+
+def test_default_commit_message_when_package_unset():
+    # Without commit_package, fall back to @semantic-release/git's default subject.
+    rc = get_releaserc(changelog=False, skip_build=True)
+    assert _git_message(rc) is None
+
+
 if __name__ == "__main__":
     test_set_pixi_version_bumps_package_table_preserving_comments()
     test_release_job_commits_pixi_toml()
     test_release_job_adds_changelog_when_requested()
     test_build_leg_never_commits()
     test_build_leg_commits_only_changelog_when_requested()
+    test_commit_message_names_the_package()
+    test_default_commit_message_when_package_unset()
     print("OK")
