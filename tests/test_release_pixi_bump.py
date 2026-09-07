@@ -8,9 +8,18 @@ Key invariant: the per-arch BUILD legs (skip_build=False) must never commit/push
 release job (skip_build=True).
 """
 from pathlib import Path
+import json
 import tempfile
 
-from platform_cli.groups.release import set_pixi_version, get_releaserc
+from platform_cli.groups.release import (
+    PackageInfo,
+    RecordedRelease,
+    get_releaserc,
+    prepend_changelog,
+    read_recorded,
+    release_commit_message,
+    set_pixi_version,
+)
 
 
 def _git_assets(rc):
@@ -101,6 +110,45 @@ def test_default_commit_message_when_package_unset():
     assert _git_message(rc) is None
 
 
+def _pkg(name, path=Path(".")):
+    return PackageInfo(package_path=path, package_name=name, package_version="0.0.0", module_info=None)
+
+
+def test_record_pass_adds_record_plugin_and_no_changelog():
+    rc = get_releaserc(changelog=True, skip_build=True, commit_package="x", record_dir=Path("/rec"))
+    names = [p[0] for p in rc["plugins"]]
+    assert "@semantic-release/changelog" not in names
+    record = [p for p in rc["plugins"] if p[0].endswith("record_release.js")]
+    assert record and record[0][1] == {"dir": "/rec", "name": "x"}
+
+
+def test_release_pass_skips_changelog_plugin_once_committed():
+    names = lambda rc: [p[0] for p in rc["plugins"]]
+    assert "@semantic-release/changelog" not in names(get_releaserc(changelog=True, skip_build=True, changelog_committed=True))
+    assert "@semantic-release/changelog" in names(get_releaserc(changelog=True, skip_build=True))
+
+
+def test_prepend_changelog_matches_semantic_release_changelog_layout():
+    assert prepend_changelog("", "## x 1.1.0\n\n* a\n") == "## x 1.1.0\n\n* a\n"
+    assert prepend_changelog("## x 1.0.0\n\n* old\n", "## x 1.1.0\n\n* a") == "## x 1.1.0\n\n* a\n\n## x 1.0.0\n\n* old\n"
+
+
+def test_release_commit_message_names_every_package():
+    msg = release_commit_message([
+        RecordedRelease(_pkg("a"), "1.1.0", "## a 1.1.0\n\n* one"),
+        RecordedRelease(_pkg("b"), "2.0.0", ""),
+    ])
+    assert msg == "chore(release): a 1.1.0, b 2.0.0 [skip ci]\n\n## a 1.1.0\n\n* one"
+
+
+def test_read_recorded_keeps_package_order_and_skips_unreleased():
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "b.json").write_text(json.dumps({"version": "2.0.0", "notes": "nb"}))
+        (Path(d) / "a.json").write_text(json.dumps({"version": "1.1.0", "notes": "na"}))
+        recorded = read_recorded(Path(d), [_pkg("a"), _pkg("skipped"), _pkg("b")])
+        assert [(r.package.package_name, r.version, r.notes) for r in recorded] == [("a", "1.1.0", "na"), ("b", "2.0.0", "nb")]
+
+
 if __name__ == "__main__":
     test_set_pixi_version_bumps_package_table_preserving_comments()
     test_release_job_commits_pixi_toml()
@@ -109,4 +157,9 @@ if __name__ == "__main__":
     test_build_leg_commits_only_changelog_when_requested()
     test_commit_message_names_the_package()
     test_default_commit_message_when_package_unset()
+    test_record_pass_adds_record_plugin_and_no_changelog()
+    test_release_pass_skips_changelog_plugin_once_committed()
+    test_prepend_changelog_matches_semantic_release_changelog_layout()
+    test_release_commit_message_names_every_package()
+    test_read_recorded_keeps_package_order_and_skips_unreleased()
     print("OK")
