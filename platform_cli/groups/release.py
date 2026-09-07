@@ -339,11 +339,14 @@ def commit_release(releases: List[RecordedRelease], changelog: bool) -> None:
 def release_branch() -> str:
     """Branch the release commit is pushed to. CI checks out a detached SHA, so
     `HEAD` alone is not a pushable ref there; GITHUB_REF_NAME names the branch."""
-    branch = os.environ.get("GITHUB_REF_NAME") or subprocess.check_output(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True
-    ).strip()
+    branch = (
+        os.environ.get("GITHUB_REF_NAME")
+        or subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True).strip()
+    )
     if branch == "HEAD":
-        raise Exception("detached HEAD and GITHUB_REF_NAME unset: cannot tell which branch to push to")
+        raise Exception(
+            "detached HEAD and GITHUB_REF_NAME unset: cannot tell which branch to push to"
+        )
     return branch
 
 
@@ -836,7 +839,9 @@ class Release(PlatformCliGroup):
             if package and package not in packages:
                 raise click.ClickException(f"Package {package} not found in workspace")
 
-            def write_releasercs(record_dir: Optional[Path] = None, changelog_committed: bool = False):
+            def write_releasercs(
+                record_dir: Optional[Path] = None, changelog_committed: bool = False
+            ):
                 for package_name, package_info in packages.items():
                     # If package is specified, only build that package, otherwise build all packages (None)
                     # This prevents us from building the docker image multiple times
