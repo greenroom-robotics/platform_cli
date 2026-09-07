@@ -9,6 +9,8 @@ from enum import Enum
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import json
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from python_on_whales import docker
 from python_on_whales.components.buildx.imagetools.models import Manifest
@@ -20,6 +22,7 @@ from platform_cli.groups.packaging import apt_clone, apt_push, apt_add
 
 DEBS_DIRECTORY = "debs"
 DOCKER_REGISTRY = "localhost:5000"
+RECORD_PLUGIN = Path(__file__).parent.parent / "assets" / "record_release.js"
 
 
 class ReleaseMode(Enum):
@@ -146,9 +149,17 @@ def get_releaserc(
     branches: Optional[List[str]] = None,
     secrets: str = "{}",
     commit_package: Optional[str] = None,
+    record_dir: Optional[Path] = None,
+    changelog_committed: bool = False,
 ):
     """
-    Returns the releaserc with the plugins configured according to the arguments
+    Returns the releaserc with the plugins configured according to the arguments.
+
+    record_dir: dry-run pass. The record plugin writes each package's next
+    version and notes to `<record_dir>/<commit_package>.json` instead of
+    running the changelog plugin.
+    changelog_committed: the release commit already prepended CHANGELOG.md, so
+    the changelog plugin is left out rather than dirtying the tree again.
     """
     prepare_cmd_args = "--version=${nextRelease.version}"
     if package_dir:
@@ -172,7 +183,10 @@ def get_releaserc(
 
     add_plugin("@semantic-release/commit-analyzer", {"preset": "conventionalcommits"})
     add_plugin("@semantic-release/release-notes-generator", {"preset": "conventionalcommits"})
-    add_plugin("@semantic-release/changelog", {})
+    if record_dir is not None:
+        add_plugin(str(RECORD_PLUGIN), {"dir": str(record_dir), "name": commit_package})
+    elif not changelog_committed:
+        add_plugin("@semantic-release/changelog", {})
     if not skip_build:
         # Build legs (one per arch) build + publish the .deb. They run
         # concurrently and must NOT commit/push anything: a push here advances
@@ -265,6 +279,75 @@ def set_pixi_version(pixi_toml: Path, version: str) -> None:
         raise Exception(f"{pixi_toml} has no [package] table")
     pkg["version"] = version
     pixi_toml.write_text(tomlkit.dumps(doc))
+
+
+@dataclass
+class RecordedRelease:
+    package: PackageInfo
+    version: str
+    notes: str
+
+
+def read_recorded(record_dir: Path, packages: Iterable[PackageInfo]) -> List[RecordedRelease]:
+    """Packages the dry-run pass recorded a next release for, in `packages` order."""
+    recorded = []
+    for package in packages:
+        record = record_dir / f"{package.package_name}.json"
+        if record.exists():
+            data = json.loads(record.read_text())
+            recorded.append(RecordedRelease(package, data["version"], data["notes"]))
+    return recorded
+
+
+def prepend_changelog(existing: str, notes: str) -> str:
+    """Prepend `notes` to a CHANGELOG.md the way @semantic-release/changelog does."""
+    existing = existing.strip()
+    if not existing:
+        return f"{notes.strip()}\n"
+    return f"{notes.strip()}\n\n{existing}\n"
+
+
+def release_commit_message(releases: List[RecordedRelease]) -> str:
+    subject = ", ".join(f"{r.package.package_name} {r.version}" for r in releases)
+    body = "\n\n".join(r.notes.strip() for r in releases if r.notes.strip())
+    return f"chore(release): {subject} [skip ci]\n\n{body}"
+
+
+def commit_release(releases: List[RecordedRelease], changelog: bool) -> None:
+    """Bump every released package's pixi.toml (and CHANGELOG.md) in one commit and push it."""
+    files: List[Path] = []
+    for r in releases:
+        pixi_toml = r.package.package_path / "pixi.toml"
+        if pixi_toml.exists():
+            set_pixi_version(pixi_toml, r.version)
+            files.append(pixi_toml)
+        if changelog:
+            changelog_md = r.package.package_path / "CHANGELOG.md"
+            existing = changelog_md.read_text() if changelog_md.exists() else ""
+            changelog_md.write_text(prepend_changelog(existing, r.notes))
+            files.append(changelog_md)
+    if not files:
+        return
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write(release_commit_message(releases))
+        message_file = f.name
+    call("git add -- " + " ".join(str(p) for p in files))
+    call(f"git commit --quiet -F {message_file}")
+    call(f"git push origin HEAD:refs/heads/{release_branch()}")
+
+
+def release_branch() -> str:
+    """Branch the release commit is pushed to. CI checks out a detached SHA, so
+    `HEAD` alone is not a pushable ref there; GITHUB_REF_NAME names the branch."""
+    branch = (
+        os.environ.get("GITHUB_REF_NAME")
+        or subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True).strip()
+    )
+    if branch == "HEAD":
+        raise Exception(
+            "detached HEAD and GITHUB_REF_NAME unset: cannot tell which branch to push to"
+        )
+    return branch
 
 
 def find_packages(path: Optional[Path] = None, module_info: bool = True) -> Dict[str, PackageInfo]:
@@ -756,31 +839,36 @@ class Release(PlatformCliGroup):
             if package and package not in packages:
                 raise click.ClickException(f"Package {package} not found in workspace")
 
-            # Create a releaserc for each package
-            for package_name, package_info in packages.items():
-                # If package is specified, only build that package, otherwise build all packages (None)
-                # This prevents us from building the docker image multiple times
-                package_to_build = package_name if package else None
-                releaserc = get_releaserc(
-                    changelog,
-                    github_release and not skip_tag,
-                    public,
-                    arch,
-                    package_to_build,
-                    package_dir,
-                    ros_distro,
-                    skip_build,
-                    branches_split,
-                    secrets,
-                    commit_package=package_name,
-                )
-                with open(package_info.package_path / ".releaserc", "w+") as f:
-                    f.write(json.dumps(releaserc, indent=4))
+            def write_releasercs(
+                record_dir: Optional[Path] = None, changelog_committed: bool = False
+            ):
+                for package_name, package_info in packages.items():
+                    # If package is specified, only build that package, otherwise build all packages (None)
+                    # This prevents us from building the docker image multiple times
+                    package_to_build = package_name if package else None
+                    releaserc = get_releaserc(
+                        changelog,
+                        github_release and not skip_tag,
+                        public,
+                        arch,
+                        package_to_build,
+                        package_dir,
+                        ros_distro,
+                        skip_build,
+                        branches_split,
+                        secrets,
+                        commit_package=package_name,
+                        record_dir=record_dir,
+                        changelog_committed=changelog_committed,
+                    )
+                    with open(package_info.package_path / ".releaserc", "w+") as f:
+                        f.write(json.dumps(releaserc, indent=4))
 
             # Run the correct release script in the package.json based off the release mode
             release_mode = self._get_release_mode()
 
             if release_mode == ReleaseMode.SINGLE:
+                write_releasercs()
                 if len(arch) == 1:
                     args_str += " --tag-format='${version}'"
                 echo(
@@ -788,15 +876,32 @@ class Release(PlatformCliGroup):
                     "blue",
                 )
                 call(f"yarn semantic-release {args_str}")
-            else:
-                if len(arch) == 1:
-                    args_str += " --tag-format='${name}@${version}'"
+                return
 
-                echo(
-                    "Release mode: MULTI, running multi-semantic-release for root package",
-                    "blue",
-                )
-                call(f"yarn multi-semantic-release {args_str}")
+            if len(arch) == 1:
+                args_str += " --tag-format='${name}@${version}'"
+
+            # One release commit for every package released this run, made
+            # before any tag exists so all tags land on it. The real pass then
+            # sees a clean tree: set-pixi-version rewrites the same version and
+            # @semantic-release/git commits nothing when no asset changed.
+            changelog_committed = False
+            if skip_build:
+                with tempfile.TemporaryDirectory() as record_dir:
+                    write_releasercs(record_dir=Path(record_dir))
+                    echo("Release mode: MULTI, dry run to record next versions", "blue")
+                    call(f"yarn multi-semantic-release {args_str} --dry-run")
+                    releases = read_recorded(Path(record_dir), packages.values())
+                if releases:
+                    commit_release(releases, changelog)
+                    changelog_committed = changelog
+
+            write_releasercs(changelog_committed=changelog_committed)
+            echo(
+                "Release mode: MULTI, running multi-semantic-release for root package",
+                "blue",
+            )
+            call(f"yarn multi-semantic-release {args_str}")
 
         @release.command(name="set-pixi-version")
         @click.option(
