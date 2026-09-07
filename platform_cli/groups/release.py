@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import json
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from python_on_whales import docker
@@ -332,7 +333,18 @@ def commit_release(releases: List[RecordedRelease], changelog: bool) -> None:
         message_file = f.name
     call("git add -- " + " ".join(str(p) for p in files))
     call(f"git commit --quiet -F {message_file}")
-    call("git push origin HEAD")
+    call(f"git push origin HEAD:refs/heads/{release_branch()}")
+
+
+def release_branch() -> str:
+    """Branch the release commit is pushed to. CI checks out a detached SHA, so
+    `HEAD` alone is not a pushable ref there; GITHUB_REF_NAME names the branch."""
+    branch = os.environ.get("GITHUB_REF_NAME") or subprocess.check_output(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True
+    ).strip()
+    if branch == "HEAD":
+        raise Exception("detached HEAD and GITHUB_REF_NAME unset: cannot tell which branch to push to")
+    return branch
 
 
 def find_packages(path: Optional[Path] = None, module_info: bool = True) -> Dict[str, PackageInfo]:
