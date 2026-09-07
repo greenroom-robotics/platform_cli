@@ -200,7 +200,9 @@ class Packaging(PlatformCliGroup):
             if distro == "iron":
                 distro = "iron --include-eol-distros"
 
-            call(f"rosdep install -y --rosdistro {distro} --from-paths {from_paths} -i")
+            call(
+                f"rosdep install -y --rosdistro {distro} --from-paths {from_paths} -i --as-root pip:false"
+            )
 
         @pkg.command(name="get-sources")
         def get_sources():  # type: ignore reportUnusedFunction
