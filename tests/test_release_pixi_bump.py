@@ -14,10 +14,12 @@ import tempfile
 from platform_cli.groups.release import (
     PackageInfo,
     RecordedRelease,
+    commit_release,
     get_releaserc,
     prepend_changelog,
     read_recorded,
     release_commit_message,
+    releasable_pixi_toml,
     set_pixi_version,
 )
 
@@ -165,6 +167,27 @@ def test_read_recorded_keeps_package_order_and_skips_unreleased():
         ]
 
 
+def test_releasable_pixi_toml_requires_package_table():
+    with tempfile.TemporaryDirectory() as d:
+        pkg = Path(d)
+        assert releasable_pixi_toml(pkg) is None
+        (pkg / "pixi.toml").write_text('[workspace]\nname = "dev"\n')
+        assert releasable_pixi_toml(pkg) is None
+        (pkg / "pixi.toml").write_text('[package]\nname = "foo"\nversion = "1.0.0"\n')
+        assert releasable_pixi_toml(pkg) == pkg / "pixi.toml"
+
+
+def test_commit_release_leaves_dev_only_pixi_toml_untouched():
+    # A vendored package keeps a dev-only pixi.toml (no [package]); releasing it
+    # must not try to bump that manifest.
+    with tempfile.TemporaryDirectory() as d:
+        pkg = Path(d)
+        body = '[workspace]\nname = "dev"\n'
+        (pkg / "pixi.toml").write_text(body)
+        commit_release([RecordedRelease(_pkg("vendored", pkg), "1.2.0", "")], changelog=False)
+        assert (pkg / "pixi.toml").read_text() == body
+
+
 if __name__ == "__main__":
     test_set_pixi_version_bumps_package_table_preserving_comments()
     test_release_job_commits_pixi_toml()
@@ -178,4 +201,6 @@ if __name__ == "__main__":
     test_prepend_changelog_matches_semantic_release_changelog_layout()
     test_release_commit_message_names_every_package()
     test_read_recorded_keeps_package_order_and_skips_unreleased()
+    test_releasable_pixi_toml_requires_package_table()
+    test_commit_release_leaves_dev_only_pixi_toml_untouched()
     print("OK")

@@ -281,6 +281,18 @@ def set_pixi_version(pixi_toml: Path, version: str) -> None:
     pixi_toml.write_text(tomlkit.dumps(doc))
 
 
+def releasable_pixi_toml(package_path: Path) -> Optional[Path]:
+    """The package's pixi.toml if it has a [package] table to bump. A manifest
+    without one is a dev-only workspace, not a released package.
+    """
+    import tomlkit
+
+    pixi_toml = package_path / "pixi.toml"
+    if not pixi_toml.exists() or "package" not in tomlkit.parse(pixi_toml.read_text()):
+        return None
+    return pixi_toml
+
+
 @dataclass
 class RecordedRelease:
     package: PackageInfo
@@ -317,8 +329,8 @@ def commit_release(releases: List[RecordedRelease], changelog: bool) -> None:
     """Bump every released package's pixi.toml (and CHANGELOG.md) in one commit and push it."""
     files: List[Path] = []
     for r in releases:
-        pixi_toml = r.package.package_path / "pixi.toml"
-        if pixi_toml.exists():
+        pixi_toml = releasable_pixi_toml(r.package.package_path)
+        if pixi_toml:
             set_pixi_version(pixi_toml, r.version)
             files.append(pixi_toml)
         if changelog:
@@ -934,12 +946,15 @@ class Release(PlatformCliGroup):
             else:
                 package_info = get_package_info()
 
-            pixi_toml = package_info.package_path / "pixi.toml"
-            if pixi_toml.exists():
+            pixi_toml = releasable_pixi_toml(package_info.package_path)
+            if pixi_toml:
                 set_pixi_version(pixi_toml, version)
                 echo(f"Bumped {pixi_toml} to {version}", "green")
             else:
-                echo(f"No pixi.toml at {pixi_toml}; nothing to bump", "yellow")
+                echo(
+                    f"No releasable pixi.toml in {package_info.package_path}; nothing to bump",
+                    "yellow",
+                )
 
         @release.command(name="deb-prepare")
         @click.option(
