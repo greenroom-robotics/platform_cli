@@ -267,18 +267,21 @@ def get_package_version_from_package_xml(package_xml: Path) -> str:
     return root.find("version").text  # type: ignore
 
 
-def set_pixi_version(pixi_toml: Path, version: str) -> None:
+def set_pixi_version(pixi_toml: Path, version: str) -> bool:
     """Write `version` into the [package] table of a pixi.toml, preserving
-    comments and formatting. No-op-safe; raises if there is no [package] table.
+    comments and formatting. A workspace-only pixi.toml has no [package] table
+    to bump, so warn and leave it untouched. Returns whether the file was bumped.
     """
     import tomlkit
 
     doc = tomlkit.parse(pixi_toml.read_text())
     pkg = doc.get("package")
     if pkg is None:
-        raise Exception(f"{pixi_toml} has no [package] table")
+        echo(f"{pixi_toml} has no [package] table; not bumping its version", "yellow")
+        return False
     pkg["version"] = version
     pixi_toml.write_text(tomlkit.dumps(doc))
+    return True
 
 
 @dataclass
@@ -318,8 +321,7 @@ def commit_release(releases: List[RecordedRelease], changelog: bool) -> None:
     files: List[Path] = []
     for r in releases:
         pixi_toml = r.package.package_path / "pixi.toml"
-        if pixi_toml.exists():
-            set_pixi_version(pixi_toml, r.version)
+        if pixi_toml.exists() and set_pixi_version(pixi_toml, r.version):
             files.append(pixi_toml)
         if changelog:
             changelog_md = r.package.package_path / "CHANGELOG.md"
@@ -936,8 +938,8 @@ class Release(PlatformCliGroup):
 
             pixi_toml = package_info.package_path / "pixi.toml"
             if pixi_toml.exists():
-                set_pixi_version(pixi_toml, version)
-                echo(f"Bumped {pixi_toml} to {version}", "green")
+                if set_pixi_version(pixi_toml, version):
+                    echo(f"Bumped {pixi_toml} to {version}", "green")
             else:
                 echo(f"No pixi.toml at {pixi_toml}; nothing to bump", "yellow")
 
