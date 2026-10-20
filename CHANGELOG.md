@@ -1,3 +1,23 @@
+## [1.9.0](https://github.com/Greenroom-Robotics/platform_cli/compare/v1.8.0...v1.9.0) (2026-10-20)
+
+
+### Features
+
+* [sc-20634] add pass-through options for platform ros build ([#18](https://github.com/Greenroom-Robotics/platform_cli/issues/18)) ([aaca0d0](https://github.com/Greenroom-Robotics/platform_cli/commit/aaca0d00dc3a1e5e285b03f0445c0235c1419da1))
+* add ability to build package deps ([f4592d7](https://github.com/Greenroom-Robotics/platform_cli/commit/f4592d70747e9d0ea2270b7b944e05ba7c747205))
+* add ability to specify extra cmake args ([#16](https://github.com/Greenroom-Robotics/platform_cli/issues/16)) ([39abe73](https://github.com/Greenroom-Robotics/platform_cli/commit/39abe73605eddc0b5b8e9111c810d9761237dd04))
+* bump and commit pixi.toml in deb release ([#22](https://github.com/Greenroom-Robotics/platform_cli/issues/22)) ([856112d](https://github.com/Greenroom-Robotics/platform_cli/commit/856112d6111704729dee6f07b52c26a037058673))
+* name package in release commit subject ([#24](https://github.com/Greenroom-Robotics/platform_cli/issues/24)) ([de2e32d](https://github.com/Greenroom-Robotics/platform_cli/commit/de2e32de5734016e2228acce10022b1d962bfdf1))
+* single release commit for multi-package releases ([#26](https://github.com/Greenroom-Robotics/platform_cli/issues/26)) ([f98e937](https://github.com/Greenroom-Robotics/platform_cli/commit/f98e9371f82c0b7fc90a788936f0ea0c5be06c8d))
+
+
+### Bug Fixes
+
+* bump and commit pixi.toml only in release job, not build legs ([#23](https://github.com/Greenroom-Robotics/platform_cli/issues/23)) ([7c37e11](https://github.com/Greenroom-Robotics/platform_cli/commit/7c37e1194793b8c70103d58961a6a3e64bd655fe))
+* install pip rosdeps without sudo ([#25](https://github.com/Greenroom-Robotics/platform_cli/issues/25)) ([013d564](https://github.com/Greenroom-Robotics/platform_cli/commit/013d564dcf09d6d716194b60bfaa4b1e183437ab))
+* old defaults ([3480ccb](https://github.com/Greenroom-Robotics/platform_cli/commit/3480ccba4d78b59bb7911544781f1cc9de93a0dd))
+* warn instead of failing on pixi.toml without [package] table ([#28](https://github.com/Greenroom-Robotics/platform_cli/issues/28)) ([35460d3](https://github.com/Greenroom-Robotics/platform_cli/commit/35460d332a7d9373866d08c3eedbb90e1141a98d))
+
 ## [1.8.0](https://github.com/Greenroom-Robotics/platform_cli/compare/v1.7.2...v1.8.0) (2026-03-04)
 
 
