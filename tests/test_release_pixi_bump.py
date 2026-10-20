@@ -58,6 +58,16 @@ def test_set_pixi_version_bumps_package_table_preserving_comments():
         assert 'version = "0.0.0"' in out
 
 
+def test_set_pixi_version_skips_workspace_only_pixi_toml():
+    # e.g. deepstream_extensions: a [workspace]-only pixi.toml must warn, not fail the release.
+    body = '[workspace]\nname = "foo"\n'
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "pixi.toml"
+        p.write_text(body)
+        assert set_pixi_version(p, "1.2.3") is False
+        assert p.read_text() == body
+
+
 def test_release_job_commits_pixi_toml():
     # Release job: skip_build=True -> bump via set-pixi-version + commit pixi.toml.
     rc = get_releaserc(changelog=False, skip_build=True)
@@ -167,6 +177,7 @@ def test_read_recorded_keeps_package_order_and_skips_unreleased():
 
 if __name__ == "__main__":
     test_set_pixi_version_bumps_package_table_preserving_comments()
+    test_set_pixi_version_skips_workspace_only_pixi_toml()
     test_release_job_commits_pixi_toml()
     test_release_job_adds_changelog_when_requested()
     test_build_leg_never_commits()
